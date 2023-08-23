@@ -22,14 +22,16 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 NC='\033[0m' # No Color
 
-FILES_TO_CHECK=$(git diff --name-only master | grep -v -E "^include/vulkan" | grep -E ".*\.(cpp|cc|c\+\+|cxx|c|h|hpp)$")
+clang-format --version
+
+FILES_TO_CHECK=$(git diff --name-only main | grep -v -E "^include/vulkan" | grep -E ".*\.(cpp|cc|c\+\+|cxx|c|h|hpp)$")
 
 if [ -z "${FILES_TO_CHECK}" ]; then
   echo -e "${GREEN}No source code to check for formatting.${NC}"
   exit 0
 fi
 
-FORMAT_DIFF=$(git diff -U0 master -- ${FILES_TO_CHECK} | python ./scripts/clang-format-diff.py -p1 -style=file)
+FORMAT_DIFF=$(git diff -U0 main -- ${FILES_TO_CHECK} | python ./scripts/clang-format-diff.py -p1 -style=file)
 
 if [ -z "${FORMAT_DIFF}" ]; then
   echo -e "${GREEN}All source code in PR properly formatted.${NC}"
@@ -37,5 +39,7 @@ if [ -z "${FORMAT_DIFF}" ]; then
 else
   echo -e "${RED}Found formatting errors!${NC}"
   echo "${FORMAT_DIFF}"
+  echo "Be sure you are using the following version of clang-format:"
+  clang-format --version
   exit 1
 fi

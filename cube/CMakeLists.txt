@@ -15,7 +15,7 @@
 # limitations under the License.
 # ~~~
 
-set(CUBE_INCLUDE_DIRS ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR}/.. ${VulkanHeaders_INCLUDE_DIR})
+set(CUBE_INCLUDE_DIRS ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR}/..)
 
 set(SCRIPTS_DIR "${PROJECT_SOURCE_DIR}/scripts")
 
@@ -27,45 +27,96 @@ if(GLSLANG_INSTALL_DIR)
     message(STATUS "Using GLSLANG_INSTALL_DIR to look for glslangValidator")
     find_program(GLSLANG_VALIDATOR names glslangValidator HINTS "${GLSLANG_INSTALL_DIR}/bin")
 else()
+    find_package(Python3 REQUIRED QUIET)
     set(GLSLANG_VALIDATOR_NAME "glslangValidator")
     message(STATUS "Using cmake find_program to look for glslangValidator")
     if(WIN32)
         execute_process(
-            COMMAND ${PYTHON_EXECUTABLE} ${SCRIPTS_DIR}/fetch_glslangvalidator.py glslang-master-windows-x64-Release.zip)
+            COMMAND ${Python3_EXECUTABLE} ${SCRIPTS_DIR}/fetch_glslangvalidator.py glslang-master-windows-x64-Release.zip)
         set(GLSLANG_VALIDATOR_NAME "glslangValidator.exe")
     elseif(APPLE)
-        execute_process(COMMAND ${PYTHON_EXECUTABLE} ${SCRIPTS_DIR}/fetch_glslangvalidator.py glslang-master-osx-Release.zip)
+        execute_process(COMMAND ${Python3_EXECUTABLE} ${SCRIPTS_DIR}/fetch_glslangvalidator.py glslang-master-osx-Release.zip)
     elseif(UNIX AND NOT APPLE) # i.e. Linux
-        execute_process(COMMAND ${PYTHON_EXECUTABLE} ${SCRIPTS_DIR}/fetch_glslangvalidator.py glslang-master-linux-Release.zip)
+        execute_process(COMMAND ${Python3_EXECUTABLE} ${SCRIPTS_DIR}/fetch_glslangvalidator.py glslang-master-linux-Release.zip)
     endif()
-    find_program(GLSLANG_VALIDATOR NAMES ${GLSLANG_VALIDATOR_NAME} HINTS "${PROJECT_SOURCE_DIR}/glslang/bin")
+    if (WIN32)
+        set(PLATFORM_DIR "${PROJECT_SOURCE_DIR}/glslang/windows/bin")
+    elseif(APPLE)
+        set(PLATFORM_DIR "${PROJECT_SOURCE_DIR}/glslang/darwin/bin")
+    else()
+        set(PLATFORM_DIR "${PROJECT_SOURCE_DIR}/glslang/linux/bin")
+    endif()
+    find_program(GLSLANG_VALIDATOR NAMES ${GLSLANG_VALIDATOR_NAME} HINTS ${PLATFORM_DIR})
 endif()
 
 if(UNIX AND NOT APPLE) # i.e. Linux
-    include(FindPkgConfig)
     option(BUILD_WSI_XCB_SUPPORT "Build XCB WSI support" ON)
     option(BUILD_WSI_XLIB_SUPPORT "Build Xlib WSI support" ON)
     option(BUILD_WSI_WAYLAND_SUPPORT "Build Wayland WSI support" ON)
-    set(CUBE_WSI_SELECTION "XCB" CACHE STRING "Select WSI target for vkcube (XCB, XLIB, WAYLAND, DISPLAY)")
+    option(BUILD_WSI_DIRECTFB_SUPPORT "Build DirectFB WSI support" OFF)
+    set(CUBE_WSI_SELECTION "XCB" CACHE STRING "Select WSI target for vkcube (XCB, XLIB, WAYLAND, DIRECTFB, DISPLAY)")
+
+    find_package(PkgConfig REQUIRED QUIET) # Use PkgConfig to find Linux system libraries
 
     if(BUILD_WSI_XCB_SUPPORT)
-        find_package(XCB REQUIRED)
+        pkg_check_modules(XCB REQUIRED QUIET IMPORTED_TARGET xcb)
     endif()
 
     if(BUILD_WSI_XLIB_SUPPORT)
-        find_package(X11 REQUIRED)
+        pkg_check_modules(X11 REQUIRED QUIET IMPORTED_TARGET x11)
     endif()
 
     if(BUILD_WSI_WAYLAND_SUPPORT)
         find_package(Wayland REQUIRED)
+        find_package(WaylandScanner REQUIRED)
+        find_package(WaylandProtocols REQUIRED)
         include_directories(${WAYLAND_CLIENT_INCLUDE_DIR})
+        set(XDG_SHELL_PROTOCOL ${WAYLAND_PROTOCOLS_PATH}/stable/xdg-shell/xdg-shell.xml)
+        add_custom_command(COMMENT "Generating xdg-shell protocol dispatch data"
+                           OUTPUT xdg-shell-code.c
+                           COMMAND ${WAYLAND_SCANNER_EXECUTABLE}
+                                   private-code
+                                   ${XDG_SHELL_PROTOCOL}
+                                   ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-code.c
+                           MAIN_DEPENDENCY ${XDG_SHELL_PROTOCOL}
+                           DEPENDS ${XDG_SHELL_PROTOCOL} ${WAYLAND_SCANNER_EXECUTABLE})
+        add_custom_command(COMMENT "Generating xdg-shell protocol header"
+                           OUTPUT xdg-shell-client-header.h
+                           COMMAND ${WAYLAND_SCANNER_EXECUTABLE}
+                                   client-header
+                                   ${XDG_SHELL_PROTOCOL}
+                                   ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-client-header.h
+                           MAIN_DEPENDENCY ${XDG_SHELL_PROTOCOL}
+                           DEPENDS ${XDG_SHELL_PROTOCOL} ${WAYLAND_SCANNER_EXECUTABLE})
+
+        set(XDG_DECORATION_PROTOCOL ${WAYLAND_PROTOCOLS_PATH}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml)
+        add_custom_command(COMMENT "Generating xdg-decoration protocol dispatch data"
+                           OUTPUT xdg-decoration-code.c
+                           COMMAND ${WAYLAND_SCANNER_EXECUTABLE}
+                                   private-code
+                                   ${XDG_DECORATION_PROTOCOL}
+                                   ${CMAKE_CURRENT_BINARY_DIR}/xdg-decoration-code.c
+                           MAIN_DEPENDENCY ${XDG_DECORATION_PROTOCOL}
+                           DEPENDS ${XDG_DECORATION_PROTOCOL} ${WAYLAND_SCANNER_EXECUTABLE})
+        add_custom_command(COMMENT "Generating xdg-decoration protocol header"
+                           OUTPUT xdg-decoration-client-header.h
+                           COMMAND ${WAYLAND_SCANNER_EXECUTABLE}
+                                   client-header
+                                   ${XDG_DECORATION_PROTOCOL}
+                                   ${CMAKE_CURRENT_BINARY_DIR}/xdg-decoration-client-header.h
+                           MAIN_DEPENDENCY ${XDG_DECORATION_PROTOCOL}
+                           DEPENDS ${XDG_DECORATION_PROTOCOL} ${WAYLAND_SCANNER_EXECUTABLE})
+    endif()
+
+    if(BUILD_WSI_DIRECTFB_SUPPORT)
+        pkg_check_modules(DirectFB REQUIRED QUIET IMPORTED_TARGET directfb)
     endif()
 endif()
 
 if(WIN32)
     add_definitions(-DVK_USE_PLATFORM_WIN32_KHR -DWIN32_LEAN_AND_MEAN)
-    if(NOT MSVC_VERSION LESS 1900)
-        # Enable control flow guard
+    if(MSVC AND NOT MSVC_VERSION LESS 1900)
+        # If MSVC, Enable control flow guard
         message(STATUS "Building vkcube with control flow guard")
         add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/guard:cf>")
         set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /guard:cf")
@@ -84,25 +135,36 @@ elseif(UNIX AND NOT APPLE) # i.e. Linux
         if(NOT BUILD_WSI_XCB_SUPPORT)
             message(FATAL_ERROR "Selected XCB for vkcube build but not building Xcb support")
         endif()
-        set(CUBE_INCLUDE_DIRS ${XCB_INCLUDE_DIRS} ${CUBE_INCLUDE_DIRS})
-        link_libraries(${XCB_LIBRARIES})
-        add_definitions(-DVK_USE_PLATFORM_XCB_KHR)
+        link_libraries(PkgConfig::XCB)
+        set(CUBE_PLATFORM VK_USE_PLATFORM_XCB_KHR)
     elseif(CUBE_WSI_SELECTION STREQUAL "XLIB")
         if(NOT BUILD_WSI_XLIB_SUPPORT)
             message(FATAL_ERROR "Selected XLIB for vkcube build but not building Xlib support")
         endif()
-        set(CUBE_INCLUDE_DIRS ${X11_INCLUDE_DIR} ${CUBE_INCLUDE_DIRS})
-        link_libraries(${X11_LIBRARIES})
-        add_definitions(-DVK_USE_PLATFORM_XLIB_KHR)
+        link_libraries(PkgConfig::X11)
+        set(CUBE_PLATFORM VK_USE_PLATFORM_XLIB_KHR)
     elseif(CUBE_WSI_SELECTION STREQUAL "WAYLAND")
         if(NOT BUILD_WSI_WAYLAND_SUPPORT)
             message(FATAL_ERROR "Selected Wayland for vkcube build but not building Wayland support")
         endif()
         set(CUBE_INCLUDE_DIRS ${WAYLAND_CLIENT_INCLUDE_DIR} ${CUBE_INCLUDE_DIRS})
         link_libraries(${WAYLAND_CLIENT_LIBRARIES})
-        add_definitions(-DVK_USE_PLATFORM_WAYLAND_KHR)
+        set(CUBE_PLATFORM VK_USE_PLATFORM_WAYLAND_KHR)
+        set(XDG_SHELL_PROTOCOL ${WAYLAND_PROTOCOLS_PATH}/stable/xdg-shell/xdg-shell.xml)
+        set(OPTIONAL_WAYLAND_DATA_FILES
+            ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-code.c
+            ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-client-header.h
+            ${CMAKE_CURRENT_BINARY_DIR}/xdg-decoration-code.c
+            ${CMAKE_CURRENT_BINARY_DIR}/xdg-decoration-client-header.h)
+        include_directories(${CMAKE_CURRENT_BINARY_DIR})
+    elseif(CUBE_WSI_SELECTION STREQUAL "DIRECTFB")
+        if(NOT BUILD_WSI_DIRECTFB_SUPPORT)
+            message(FATAL_ERROR "Selected DIRECTFB for vkcube build but not building DirectFB support")
+        endif()
+        link_libraries(PkgConfig::DirectFB)
+        set(CUBE_PLATFORM VK_USE_PLATFORM_DIRECTFB_EXT)
     elseif(CUBE_WSI_SELECTION STREQUAL "DISPLAY")
-        add_definitions(-DVK_USE_PLATFORM_DISPLAY_KHR)
+        set(CUBE_PLATFORM VK_USE_PLATFORM_DISPLAY_KHR)
     else()
         message(FATAL_ERROR "Unrecognized value for CUBE_WSI_SELECTION: ${CUBE_WSI_SELECTION}")
     endif()
@@ -114,30 +176,6 @@ endif()
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-
-if(WIN32)
-    # Use static MSVCRT libraries
-    foreach(configuration
-            in
-            CMAKE_C_FLAGS_DEBUG
-            CMAKE_C_FLAGS_MINSIZEREL
-            CMAKE_C_FLAGS_RELEASE
-            CMAKE_C_FLAGS_RELWITHDEBINFO
-            CMAKE_CXX_FLAGS_DEBUG
-            CMAKE_CXX_FLAGS_MINSIZEREL
-            CMAKE_CXX_FLAGS_RELEASE
-            CMAKE_CXX_FLAGS_RELWITHDEBINFO)
-        if(${configuration} MATCHES "/MD")
-            string(REGEX
-                   REPLACE "/MD"
-                           "/MT"
-                           ${configuration}
-                           "${${configuration}}")
-        endif()
-    endforeach()
-
-    file(COPY cube.vcxproj.user DESTINATION ${CMAKE_BINARY_DIR}/cube)
-endif()
 
 add_custom_command(COMMENT "Compiling cube vertex shader"
                    OUTPUT cube.vert.inc
@@ -166,20 +204,25 @@ include_directories(${CUBE_INCLUDE_DIRS})
 if(APPLE)
     include(macOS/cube/cube.cmake)
 elseif(NOT WIN32)
-    if(${CMAKE_SYSTEM_PROCESSOR} STREQUAL ${CMAKE_HOST_SYSTEM_PROCESSOR})
-        add_executable(vkcube
-                       cube.c
-                       ${PROJECT_SOURCE_DIR}/cube/cube.vert
-                       ${PROJECT_SOURCE_DIR}/cube/cube.frag
-                       cube.vert.inc
-                       cube.frag.inc)
-        target_link_libraries(vkcube Vulkan::Vulkan)
-        include(CheckLibraryExists)
-        CHECK_LIBRARY_EXISTS("rt" clock_gettime "" NEED_RT)
-        if (NEED_RT)
-            target_link_libraries(vkcube rt)
-        endif()
+    add_executable(vkcube
+                   cube.c
+                   ${PROJECT_SOURCE_DIR}/cube/cube.vert
+                   ${PROJECT_SOURCE_DIR}/cube/cube.frag
+                   cube.vert.inc
+                   cube.frag.inc
+                   ${OPTIONAL_WAYLAND_DATA_FILES})
+    target_link_libraries(vkcube Vulkan::Vulkan)
+    target_compile_definitions(vkcube PUBLIC ${CUBE_PLATFORM})
+    include(CheckLibraryExists)
+    CHECK_LIBRARY_EXISTS("rt" clock_gettime "" NEED_RT)
+    if (NEED_RT)
+        target_link_libraries(vkcube rt)
     endif()
+
+    if (ENABLE_ADDRESS_SANITIZER)
+        target_compile_options(vkcube PUBLIC -fsanitize=address)
+        target_link_options(vkcube PUBLIC -fsanitize=address)
+    endif ()
 else()
     if(CMAKE_CL_64)
         set(LIB_DIR "Win64")
@@ -216,15 +259,20 @@ endif()
 if(APPLE)
     include(macOS/cubepp/cubepp.cmake)
 elseif(NOT WIN32)
-    if(${CMAKE_SYSTEM_PROCESSOR} STREQUAL ${CMAKE_HOST_SYSTEM_PROCESSOR})
-        add_executable(vkcubepp
-                       cube.cpp
-                       ${PROJECT_SOURCE_DIR}/cube/cube.vert
-                       ${PROJECT_SOURCE_DIR}/cube/cube.frag
-                       cube.vert.inc
-                       cube.frag.inc)
-        target_link_libraries(vkcubepp Vulkan::Vulkan)
-    endif()
+    add_executable(vkcubepp
+                   cube.cpp
+                   ${PROJECT_SOURCE_DIR}/cube/cube.vert
+                   ${PROJECT_SOURCE_DIR}/cube/cube.frag
+                   cube.vert.inc
+                   cube.frag.inc
+                   ${OPTIONAL_WAYLAND_DATA_FILES})
+    target_link_libraries(vkcubepp Vulkan::Vulkan)
+    target_compile_definitions(vkcubepp PUBLIC ${CUBE_PLATFORM})
+
+    if (ENABLE_ADDRESS_SANITIZER)
+        target_compile_options(vkcubepp PUBLIC -fsanitize=address)
+        target_link_options(vkcubepp PUBLIC -fsanitize=address)
+    endif ()
 else()
     if(CMAKE_CL_64)
         set(LIB_DIR "Win64")
@@ -253,4 +301,40 @@ if(APPLE)
         ")
 else()
     install(TARGETS vkcubepp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+# ----------------------------------------------------------------------------
+# vkcube-wayland
+
+if(UNIX AND NOT APPLE) # i.e. Linux
+    if(BUILD_WSI_WAYLAND_SUPPORT AND EXISTS ${WAYLAND_PROTOCOLS_PATH}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml)
+        set(CUBE_INCLUDE_DIRS ${WAYLAND_CLIENT_INCLUDE_DIR} ${CUBE_INCLUDE_DIRS})
+        link_libraries(${WAYLAND_CLIENT_LIBRARIES})
+        set(OPTIONAL_WAYLAND_DATA_FILES
+            ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-code.c
+            ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-client-header.h
+            ${CMAKE_CURRENT_BINARY_DIR}/xdg-decoration-code.c
+            ${CMAKE_CURRENT_BINARY_DIR}/xdg-decoration-client-header.h)
+        include_directories(${CMAKE_CURRENT_BINARY_DIR})
+        add_executable(vkcube-wayland
+                       cube.c
+                       ${PROJECT_SOURCE_DIR}/cube/cube.vert
+                       ${PROJECT_SOURCE_DIR}/cube/cube.frag
+                       cube.vert.inc
+                       cube.frag.inc
+                       ${OPTIONAL_WAYLAND_DATA_FILES})
+        target_link_libraries(vkcube-wayland Vulkan::Vulkan)
+        target_compile_definitions(vkcube-wayland PUBLIC VK_USE_PLATFORM_WAYLAND_KHR)
+        include(CheckLibraryExists)
+        CHECK_LIBRARY_EXISTS("rt" clock_gettime "" NEED_RT)
+        if (NEED_RT)
+            target_link_libraries(vkcube-wayland rt)
+        endif()
+        install(TARGETS vkcube-wayland RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+        if (ENABLE_ADDRESS_SANITIZER)
+            target_compile_options(vkcube-wayland PUBLIC -fsanitize=address)
+            target_link_options(vkcube-wayland PUBLIC -fsanitize=address)
+        endif ()
+    endif()
 endif()
