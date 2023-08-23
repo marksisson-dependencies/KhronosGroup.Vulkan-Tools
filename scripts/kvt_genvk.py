@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 #
-# Copyright (c) 2013-2019 The Khronos Group Inc.
+# Copyright (c) 2013-2023 The Khronos Group Inc.
+# Copyright (c) 2023-2023 RasterGrid Kft.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -59,8 +60,14 @@ def makeGenOpts(args):
     global genOpts
     genOpts = {}
 
+    # API to generate sources for
+    apiname = args.api
+
     # Default class of extensions to include, or None
-    defaultExtensions = args.defaultExtensions
+    if args.defaultExtensions is not None:
+        defaultExtensions = args.defaultExtensions
+    else:
+        defaultExtensions = apiname
 
     # Additional extensions to include (list of extensions)
     extensions = args.extension
@@ -80,6 +87,9 @@ def makeGenOpts(args):
     # Output target directory
     directory = args.directory
 
+    # Path to generated files, particularly api.py
+    genpath = args.genpath
+
     # Descriptive names for various regexp patterns used to select
     # versions and extensions
     allFeatures = allExtensions = '.*'
@@ -94,7 +104,7 @@ def makeGenOpts(args):
     # Copyright text prefixing all headers (list of strings).
     prefixStrings = [
         '/*',
-        '** Copyright (c) 2015-2018 The Khronos Group Inc.',
+        '** Copyright (c) 2015-2018, 2023 The Khronos Group Inc.',
         '**',
         '** Licensed under the Apache License, Version 2.0 (the "License");',
         '** you may not use this file except in compliance with the License.',
@@ -133,11 +143,12 @@ def makeGenOpts(args):
             conventions=conventions,
             filename='vk_typemap_helper.h',
             directory=directory,
-            apiname='vulkan',
+            genpath=None,
+            apiname=apiname,
             profile=None,
             versions=featuresPat,
             emitversions=featuresPat,
-            defaultExtensions='vulkan',
+            defaultExtensions=defaultExtensions,
             addExtensions=addExtensionsPat,
             removeExtensions=removeExtensionsPat,
             emitExtensions=emitExtensionsPat,
@@ -152,17 +163,18 @@ def makeGenOpts(args):
     ]
 
     # Options for mock ICD header
-    genOpts['mock_icd.h'] = [
+    genOpts['function_declarations.h'] = [
         MockICDOutputGenerator,
         MockICDGeneratorOptions(
             conventions=conventions,
-            filename='mock_icd.h',
+            filename='function_declarations.h',
             directory=directory,
-            apiname='vulkan',
+            genpath=None,
+            apiname=apiname,
             profile=None,
             versions=featuresPat,
             emitversions=featuresPat,
-            defaultExtensions='vulkan',
+            defaultExtensions=defaultExtensions,
             addExtensions=addExtensionsPat,
             removeExtensions=removeExtensionsPat,
             emitExtensions=emitExtensionsPat,
@@ -173,21 +185,22 @@ def makeGenOpts(args):
             apientryp='VKAPI_PTR *',
             alignFuncParam=48,
             expandEnumerants=False,
-            helper_file_type='mock_icd_header')
+            helper_file_type='mock_icd_function_declaration_implementation')
     ]
 
     # Options for mock ICD cpp
-    genOpts['mock_icd.cpp'] = [
+    genOpts['function_definitions.h'] = [
         MockICDOutputGenerator,
         MockICDGeneratorOptions(
             conventions=conventions,
-            filename='mock_icd.cpp',
+            filename='function_definitions.h',
             directory=directory,
-            apiname='vulkan',
+            genpath=None,
+            apiname=apiname,
             profile=None,
             versions=featuresPat,
             emitversions=featuresPat,
-            defaultExtensions='vulkan',
+            defaultExtensions=defaultExtensions,
             addExtensions=addExtensionsPat,
             removeExtensions=removeExtensionsPat,
             emitExtensions=emitExtensionsPat,
@@ -198,7 +211,7 @@ def makeGenOpts(args):
             apientryp='VKAPI_PTR *',
             alignFuncParam=48,
             expandEnumerants=False,
-            helper_file_type='mock_icd_source')
+            helper_file_type='mock_icd_function_definition_implementation')
     ]
 
     # Options for vulkaninfo.hpp
@@ -208,11 +221,12 @@ def makeGenOpts(args):
             conventions=conventions,
             filename='vulkaninfo.hpp',
             directory=directory,
-            apiname='vulkan',
+            genpath=None,
+            apiname=apiname,
             profile=None,
             versions=featuresPat,
             emitversions=featuresPat,
-            defaultExtensions='vulkan',
+            defaultExtensions=defaultExtensions,
             addExtensions=addExtensionsPat,
             removeExtensions=removeExtensionsPat,
             emitExtensions=emitExtensionsPat,
@@ -247,33 +261,24 @@ def genTarget(args):
 
         if not args.quiet:
             write('* Building', options.filename, file=sys.stderr)
-            write('* options.versions          =',
-                  options.versions, file=sys.stderr)
-            write('* options.emitversions      =',
-                  options.emitversions, file=sys.stderr)
-            write('* options.defaultExtensions =',
-                  options.defaultExtensions, file=sys.stderr)
-            write('* options.addExtensions     =',
-                  options.addExtensions, file=sys.stderr)
-            write('* options.removeExtensions  =',
-                  options.removeExtensions, file=sys.stderr)
-            write('* options.emitExtensions    =',
-                  options.emitExtensions, file=sys.stderr)
+            write('* options.apiname           =', options.apiname, file=sys.stderr)
+            write('* options.versions          =', options.versions, file=sys.stderr)
+            write('* options.emitversions      =', options.emitversions, file=sys.stderr)
+            write('* options.defaultExtensions =', options.defaultExtensions, file=sys.stderr)
+            write('* options.addExtensions     =', options.addExtensions, file=sys.stderr)
+            write('* options.removeExtensions  =', options.removeExtensions, file=sys.stderr)
+            write('* options.emitExtensions    =', options.emitExtensions, file=sys.stderr)
 
-        startTimer(args.time)
         gen = createGenerator(errFile=errWarn,
                               warnFile=errWarn,
                               diagFile=diag)
-        reg.setGenerator(gen)
-        reg.apiGen(options)
-
         if not args.quiet:
             write('* Generated', options.filename, file=sys.stderr)
-        endTimer(args.time, '* Time to generate ' + options.filename + ' =')
+        return (gen, options)
     else:
         write('No generator options for unknown target:',
               args.target, file=sys.stderr)
-
+        return none
 
 # -feature name
 # -extension name
@@ -282,9 +287,15 @@ def genTarget(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('-defaultExtensions', action='store',
+    parser.add_argument('-api', action='store',
                         default='vulkan',
+                        choices=['vulkan', 'vulkansc'],
+                        help='Specify API name to generate')
+    parser.add_argument('-defaultExtensions', action='store',
+                        default=None,
                         help='Specify a single class of extensions to add to targets')
+    parser.add_argument('-directory', action='store', default='.',
+                        help='Specify where the built file is place')
     parser.add_argument('-extension', action='append',
                         default=[],
                         help='Specify an extension or extensions to add to targets')
@@ -317,7 +328,9 @@ if __name__ == '__main__':
     parser.add_argument('-time', action='store_true',
                         help='Enable timing')
     parser.add_argument('-validate', action='store_true',
-                        help='Enable group validation')
+                        help='Enable XML group validation')
+    parser.add_argument('-genpath', action='store', default='gen',
+                        help='Path to generated files')
     parser.add_argument('-o', action='store', dest='directory',
                         default='.',
                         help='Create target and related files in specified directory')
@@ -359,27 +372,6 @@ if __name__ == '__main__':
     args.feature = [name for arg in args.feature for name in arg.split()]
     args.extension = [name for arg in args.extension for name in arg.split()]
 
-    # Load & parse registry
-    reg = Registry()
-
-    startTimer(args.time)
-    tree = etree.parse(args.registry)
-    endTimer(args.time, '* Time to make ElementTree =')
-
-    if args.debug:
-        pdb.run('reg.loadElementTree(tree)')
-    else:
-        startTimer(args.time)
-        reg.loadElementTree(tree)
-        endTimer(args.time, '* Time to parse ElementTree =')
-
-    if (args.validate):
-        reg.validateGroups()
-
-    if (args.dump):
-        write('* Dumping registry to regdump.txt', file=sys.stderr)
-        reg.dumpReg(filehandle=open('regdump.txt', 'w', encoding='utf-8'))
-
     # create error/warning & diagnostic files
     if (args.errfile):
         errWarn = open(args.errfile, 'w', encoding='utf-8')
@@ -391,13 +383,35 @@ if __name__ == '__main__':
     else:
         diag = None
 
+    # Create the API generator & generator options
+    (gen, options) = genTarget(args)
+
+    # Create the registry object with the specified generator and generator
+    # options. The options are set before XML loading as they may affect it.
+    reg = Registry(gen, options)
+
+    # Parse the specified registry XML into an ElementTree object
+    startTimer(args.time)
+    tree = etree.parse(args.registry)
+    endTimer(args.time, '* Time to make ElementTree =')
+
+    # Load the XML tree into the registry object
+    startTimer(args.time)
+    reg.loadElementTree(tree)
+    endTimer(args.time, '* Time to parse ElementTree =')
+
+    if (args.validate):
+        reg.validateGroups()
+
+    if (args.dump):
+        write('* Dumping registry to regdump.txt', file=sys.stderr)
+        reg.dumpReg(filehandle = open('regdump.txt', 'w', encoding='utf-8'))
+
+    # Finally, use the output generator to create the requested target
     if (args.debug):
-        pdb.run('genTarget(args)')
-    elif (args.profile):
-        import cProfile
-        import pstats
-        cProfile.run('genTarget(args)', 'profile.txt')
-        p = pstats.Stats('profile.txt')
-        p.strip_dirs().sort_stats('time').print_stats(50)
+        pdb.run('reg.apiGen()')
     else:
+        startTimer(args.time)
+        reg.apiGen()
+        endTimer(args.time, '* Time to generate ' + options.filename + ' =')
         genTarget(args)
