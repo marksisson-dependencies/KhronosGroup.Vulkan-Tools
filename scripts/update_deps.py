@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 
 # Copyright 2017 The Glslang Authors. All rights reserved.
-# Copyright (c) 2018 Valve Corporation
-# Copyright (c) 2018 LunarG, Inc.
+# Copyright (c) 2018-2023 Valve Corporation
+# Copyright (c) 2018-2023 LunarG, Inc.
+# Copyright (c) 2023-2023 RasterGrid Kft.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,11 +31,6 @@ This program is intended to assist a developer of this repository
 this home repository depend on.  It also checks out each dependent
 repository at a "known-good" commit in order to provide stability in
 the dependent repositories.
-
-Python Compatibility
---------------------
-
-This program can be used with Python 2.7 and Python 3.
 
 Known-Good JSON Database
 ------------------------
@@ -116,6 +112,10 @@ examples of all of these elements.
 
 The name of the dependent repository.  This field can be referenced
 by the "deps.repo_name" structure to record a dependency.
+
+- api
+
+The name of the API the dependency is specific to (e.g. "vulkan").
 
 - url
 
@@ -206,11 +206,6 @@ A list of options to pass to CMake during the generation phase.
 A list of environment variables where one must be set to "true"
 (case-insensitive) in order for this repo to be fetched and built.
 This list can be used to specify repos that should be built only in CI.
-Typically, this list might contain "TRAVIS" and/or "APPVEYOR" because
-each of these CI systems sets an environment variable with its own
-name to "true".  Note that this could also be (ab)used to control
-the processing of the repo with any environment variable.  The default
-is an empty list, which means that the repo is always processed.
 
 - build_step (optional)
 
@@ -225,6 +220,7 @@ Legal options include:
 "windows"
 "linux"
 "darwin"
+"android"
 
 Builds on all platforms by default.
 
@@ -238,11 +234,8 @@ option can be a relative or absolute path.
 
 """
 
-from __future__ import print_function
-
 import argparse
 import json
-import distutils.dir_util
 import os.path
 import subprocess
 import sys
@@ -250,6 +243,8 @@ import platform
 import multiprocessing
 import shlex
 import shutil
+import stat
+import time
 
 KNOWN_GOOD_FILE_NAME = 'known_good.json'
 
@@ -264,6 +259,20 @@ VERBOSE = False
 
 DEVNULL = open(os.devnull, 'wb')
 
+
+def on_rm_error( func, path, exc_info):
+    """Error handler for recursively removing a directory. The
+    shutil.rmtree function can fail on Windows due to read-only files.
+    This handler will change the permissions for the file and continue.
+    """
+    os.chmod( path, stat.S_IWRITE )
+    os.unlink( path )
+
+def make_or_exist_dirs(path):
+    "Wrapper for os.makedirs that tolerates the directory already existing"
+    # Could use os.makedirs(path, exist_ok=True) if we drop python2
+    if not os.path.isdir(path):
+        os.makedirs(path)
 
 def command_output(cmd, directory, fail_ok=False):
     """Runs a command in a directory and returns its standard output stream.
@@ -284,6 +293,9 @@ def command_output(cmd, directory, fail_ok=False):
     if VERBOSE:
         print(stdout)
     return stdout
+
+def escape(path):
+    return path.replace('\\', '/')
 
 class GoodRepo(object):
     """Represents a repository at a known-good commit."""
@@ -321,6 +333,8 @@ class GoodRepo(object):
         self.ci_only = json['ci_only'] if ('ci_only' in json) else []
         self.build_step = json['build_step'] if ('build_step' in json) else 'build'
         self.build_platforms = json['build_platforms'] if ('build_platforms' in json) else []
+        self.optional = set(json.get('optional', []))
+        self.api = json['api'] if ('api' in json) else None
         # Absolute paths for a repo's directories
         dir_top = os.path.abspath(args.dir)
         self.repo_dir = os.path.join(dir_top, self.sub_dir)
@@ -328,22 +342,64 @@ class GoodRepo(object):
             self.build_dir = os.path.join(dir_top, self.build_dir)
         if self.install_dir:
             self.install_dir = os.path.join(dir_top, self.install_dir)
-	    # Check if platform is one to build on
+
+        # By default the target platform is the host platform.
+        target_platform = platform.system().lower()
+        # However, we need to account for cross-compiling.
+        for cmake_var in self._args.cmake_var:
+            if "android.toolchain.cmake" in cmake_var:
+                target_platform = 'android'
+
         self.on_build_platform = False
-        if self.build_platforms == [] or platform.system().lower() in self.build_platforms:
+        if self.build_platforms == [] or target_platform in self.build_platforms:
             self.on_build_platform = True
 
-    def Clone(self):
-        distutils.dir_util.mkpath(self.repo_dir)
-        command_output(['git', 'clone', self.url, '.'], self.repo_dir)
+    def Clone(self, retries=10, retry_seconds=60):
+        print('Cloning {n} into {d}'.format(n=self.name, d=self.repo_dir))
+        for retry in range(retries):
+            make_or_exist_dirs(self.repo_dir)
+            try:
+                command_output(['git', 'clone', self.url, '.'], self.repo_dir)
+                # If we get here, we didn't raise an error
+                return
+            except RuntimeError as e:
+                print("Error cloning on iteration {}/{}: {}".format(retry + 1, retries, e))
+                if retry + 1 < retries:
+                    if retry_seconds > 0:
+                        print("Waiting {} seconds before trying again".format(retry_seconds))
+                        time.sleep(retry_seconds)
+                    if os.path.isdir(self.repo_dir):
+                        print("Removing old tree {}".format(self.repo_dir))
+                        shutil.rmtree(self.repo_dir, onerror=on_rm_error)
+                    continue
 
-    def Fetch(self):
-        command_output(['git', 'fetch', 'origin'], self.repo_dir)
+                # If we get here, we've exhausted our retries.
+                print("Failed to clone {} on all retries.".format(self.url))
+                raise e
+
+    def Fetch(self, retries=10, retry_seconds=60):
+        for retry in range(retries):
+            try:
+                command_output(['git', 'fetch', 'origin'], self.repo_dir)
+                # if we get here, we didn't raise an error, and we're done
+                return
+            except RuntimeError as e:
+                print("Error fetching on iteration {}/{}: {}".format(retry + 1, retries, e))
+                if retry + 1 < retries:
+                    if retry_seconds > 0:
+                        print("Waiting {} seconds before trying again".format(retry_seconds))
+                        time.sleep(retry_seconds)
+                    continue
+
+                # If we get here, we've exhausted our retries.
+                print("Failed to fetch {} on all retries.".format(self.url))
+                raise e
 
     def Checkout(self):
         print('Checking out {n} in {d}'.format(n=self.name, d=self.repo_dir))
         if self._args.do_clean_repo:
-            shutil.rmtree(self.repo_dir)
+            if os.path.isdir(self.repo_dir):
+                shutil.rmtree(self.repo_dir, onerror = on_rm_error)
         if not os.path.exists(os.path.join(self.repo_dir, '.git')):
             self.Clone()
         self.Fetch()
@@ -376,12 +432,14 @@ class GoodRepo(object):
     def CMakeConfig(self, repos):
         """Build CMake command for the configuration phase and execute it"""
         if self._args.do_clean_build:
-            shutil.rmtree(self.build_dir)
+            if os.path.isdir(self.build_dir):
+                shutil.rmtree(self.build_dir, onerror=on_rm_error)
         if self._args.do_clean_install:
-            shutil.rmtree(self.install_dir)
+            if os.path.isdir(self.install_dir):
+                shutil.rmtree(self.install_dir, onerror=on_rm_error)
 
         # Create and change to build directory
-        distutils.dir_util.mkpath(self.build_dir)
+        make_or_exist_dirs(self.build_dir)
         os.chdir(self.build_dir)
 
         cmake_cmd = [
@@ -389,31 +447,43 @@ class GoodRepo(object):
             '-DCMAKE_INSTALL_PREFIX=' + self.install_dir
         ]
 
+        # Allow users to pass in arbitrary cache variables
+        for cmake_var in self._args.cmake_var:
+            pieces = cmake_var.split('=', 1)
+            cmake_cmd.append('-D{}={}'.format(pieces[0], pieces[1]))
+
         # For each repo this repo depends on, generate a CMake variable
         # definitions for "...INSTALL_DIR" that points to that dependent
         # repo's install dir.
         for d in self.deps:
             dep_commit = [r for r in repos if r.name == d['repo_name']]
-            if len(dep_commit):
+            if len(dep_commit) and dep_commit[0].on_build_platform:
                 cmake_cmd.append('-D{var_name}={install_dir}'.format(
                     var_name=d['var_name'],
                     install_dir=dep_commit[0].install_dir))
 
         # Add any CMake options
         for option in self.cmake_options:
-            cmake_cmd.append(option)
+            cmake_cmd.append(escape(option.format(**self.__dict__)))
 
-        # Set build config for single-configuration generators
-        if platform.system() == 'Linux' or platform.system() == 'Darwin':
-            cmake_cmd.append('-DCMAKE_BUILD_TYPE={config}'.format(
-                config=CONFIG_MAP[self._args.config]))
+        # Set build config for single-configuration generators (this is a no-op on multi-config generators)
+        cmake_cmd.append(f'-D CMAKE_BUILD_TYPE={CONFIG_MAP[self._args.config]}')
 
         # Use the CMake -A option to select the platform architecture
         # without needing a Visual Studio generator.
-        if platform.system() == 'Windows':
-            if self._args.arch == '64' or self._args.arch == 'x64' or self._args.arch == 'win64':
+        if platform.system() == 'Windows' and self._args.generator != "Ninja":
+            if self._args.arch.lower() == '64' or self._args.arch == 'x64' or self._args.arch == 'win64':
                 cmake_cmd.append('-A')
                 cmake_cmd.append('x64')
+            else:
+                cmake_cmd.append('-A')
+                cmake_cmd.append('Win32')
+
+        # Apply a generator, if one is specified.  This can be used to supply
+        # a specific generator for the dependent repositories to match
+        # that of the main repository.
+        if self._args.generator is not None:
+            cmake_cmd.extend(['-G', self._args.generator])
 
         if VERBOSE:
             print("CMake command: " + " ".join(cmake_cmd))
@@ -424,22 +494,14 @@ class GoodRepo(object):
 
     def CMakeBuild(self):
         """Build CMake command for the build phase and execute it"""
-        cmake_cmd = ['cmake', '--build', self.build_dir, '--target', 'install']
+        cmake_cmd = ['cmake', '--build', self.build_dir, '--target', 'install', '--config', CONFIG_MAP[self._args.config]]
         if self._args.do_clean:
             cmake_cmd.append('--clean-first')
 
-        if platform.system() == 'Windows':
-            cmake_cmd.append('--config')
-            cmake_cmd.append(CONFIG_MAP[self._args.config])
-
-        # Speed up the build.
-        if platform.system() == 'Linux' or platform.system() == 'Darwin':
-            cmake_cmd.append('--')
-            cmake_cmd.append('-j{ncpu}'
-                             .format(ncpu=multiprocessing.cpu_count()))
-        if platform.system() == 'Windows':
-            cmake_cmd.append('--')
-            cmake_cmd.append('/maxcpucount')
+        # Ninja is parallel by default
+        if self._args.generator != "Ninja":
+            cmake_cmd.append('--parallel')
+            cmake_cmd.append(format(multiprocessing.cpu_count()))
 
         if VERBOSE:
             print("CMake command: " + " ".join(cmake_cmd))
@@ -467,6 +529,9 @@ class GoodRepo(object):
         # Build and execute CMake command for the build
         self.CMakeBuild()
 
+    def IsOptional(self, opts):
+        if len(self.optional.intersection(opts)) > 0: return True
+        else: return False
 
 def GetGoodRepos(args):
     """Returns the latest list of GoodRepo objects.
@@ -520,11 +585,13 @@ def CreateHelper(args, repos, filename):
     This information is baked into the CMake files of the home repo and so
     this dictionary is kept with the repo via the json file.
     """
-    def escape(path):
-        return path.replace('\\', '\\\\')
     install_names = GetInstallNames(args)
     with open(filename, 'w') as helper_file:
         for repo in repos:
+            # If the repo has an API tag and that does not match
+            # the target API then skip it
+            if repo.api is not None and repo.api != args.api:
+                continue
             if install_names and repo.name in install_names and repo.on_build_platform:
                 helper_file.write('set({var} "{dir}" CACHE STRING "" FORCE)\n'
                                   .format(
@@ -548,7 +615,7 @@ def main():
         '--ref',
         dest='ref',
         default='',
-        help="Override 'commit' with git reference. E.g., 'origin/master'")
+        help="Override 'commit' with git reference. E.g., 'origin/main'")
     parser.add_argument(
         '--no-build',
         dest='do_build',
@@ -581,11 +648,17 @@ def main():
         help="Delete install directory before building",
         default=False)
     parser.add_argument(
+        '--skip-existing-install',
+        dest='skip_existing_install',
+        action='store_true',
+        help="Skip build if install directory exists",
+        default=False)
+    parser.add_argument(
         '--arch',
         dest='arch',
         choices=['32', '64', 'x86', 'x64', 'win32', 'win64'],
         type=str.lower,
-        help="Set build files architecture (Windows)",
+        help="Set build files architecture (Visual Studio Generator Only)",
         default='64')
     parser.add_argument(
         '--config',
@@ -594,12 +667,36 @@ def main():
         type=str.lower,
         help="Set build files configuration",
         default='debug')
+    parser.add_argument(
+        '--api',
+        dest='api',
+        default='vulkan',
+        choices=['vulkan'],
+        help="Target API")
+    parser.add_argument(
+        '--generator',
+        dest='generator',
+        help="Set the CMake generator",
+        default=None)
+    parser.add_argument(
+        '--optional',
+        dest='optional',
+        type=lambda a: set(a.lower().split(',')),
+        help="Comma-separated list of 'optional' resources that may be skipped. Only 'tests' is currently supported as 'optional'",
+        default=set())
+    parser.add_argument(
+        '--cmake_var',
+        dest='cmake_var',
+        action='append',
+        metavar='VAR[=VALUE]',
+        help="Add CMake command line option -D'VAR'='VALUE' to the CMake generation command line; may be used multiple times",
+        default=[])
 
     args = parser.parse_args()
     save_cwd = os.getcwd()
 
     # Create working "top" directory if needed
-    distutils.dir_util.mkpath(args.dir)
+    make_or_exist_dirs(args.dir)
     abs_top_dir = os.path.abspath(args.dir)
 
     repos = GetGoodRepos(args)
@@ -607,9 +704,26 @@ def main():
 
     print('Starting builds in {d}'.format(d=abs_top_dir))
     for repo in repos:
+        # If the repo has an API tag and that does not match
+        # the target API then skip it
+        if repo.api is not None and repo.api != args.api:
+            continue
+
         # If the repo has a platform whitelist, skip the repo
         # unless we are building on a whitelisted platform.
         if not repo.on_build_platform:
+            continue
+
+        # Skip building the repo if its install directory already exists
+        # and requested via an option.  This is useful for cases where the
+        # install directory is restored from a cache that is known to be up
+        # to date.
+        if args.skip_existing_install and os.path.isdir(repo.install_dir):
+            print('Skipping build for repo {n} due to existing install directory'.format(n=repo.name))
+            continue
+
+        # Skip test-only repos if the --tests option was not passed in
+        if repo.IsOptional(args.optional):
             continue
 
         field_list = ('url',
@@ -628,7 +742,7 @@ def main():
                       'build_platforms',
                       'repo_dir',
                       'on_build_platform')
-        repo_dict[repo.name] = {field: getattr(repo, field) for field in field_list};
+        repo_dict[repo.name] = {field: getattr(repo, field) for field in field_list}
 
         # If the repo has a CI whitelist, skip the repo unless
         # one of the CI's environment variable is set to true.
@@ -659,3 +773,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

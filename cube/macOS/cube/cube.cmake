@@ -25,7 +25,7 @@ set(cube_SRCS
 set(cube_HDRS ${CMAKE_CURRENT_SOURCE_DIR}/macOS/cube/AppDelegate.h ${CMAKE_CURRENT_SOURCE_DIR}/macOS/cube/DemoViewController.h)
 
 set(cube_RESOURCES ${CMAKE_BINARY_DIR}/staging-json/MoltenVK_icd.json
-    ${CMAKE_CURRENT_SOURCE_DIR}/macOS/cube/Resources/LunarGIcon.icns)
+    ${CMAKE_CURRENT_SOURCE_DIR}/macOS/cube/Resources/VulkanIcon.icns)
 
 # Have Xcode handle the Storyboard
 if(${CMAKE_GENERATOR} MATCHES "^Xcode.*")
@@ -72,12 +72,12 @@ set_source_files_properties("${CMAKE_BINARY_DIR}/staging-json/MoltenVK_icd.json"
 # Copy the MoltenVK lib into the bundle.
 if(${CMAKE_GENERATOR} MATCHES "^Xcode.*")
     add_custom_command(TARGET vkcube POST_BUILD
-                       COMMAND ${CMAKE_COMMAND} -E copy "${MOLTENVK_DIR}/MoltenVK/macOS/dynamic/libMoltenVK.dylib"
+                       COMMAND ${CMAKE_COMMAND} -E copy "${MOLTENVK_DIR}/MoltenVK/dylib/macOS/libMoltenVK.dylib"
                                ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/vkcube.app/Contents/Frameworks/libMoltenVK.dylib
                        DEPENDS vulkan)
 else()
     add_custom_command(TARGET vkcube POST_BUILD
-                       COMMAND ${CMAKE_COMMAND} -E copy "${MOLTENVK_DIR}/MoltenVK/macOS/dynamic/libMoltenVK.dylib"
+                       COMMAND ${CMAKE_COMMAND} -E copy "${MOLTENVK_DIR}/MoltenVK/dylib/macOS/libMoltenVK.dylib"
                                ${CMAKE_CURRENT_BINARY_DIR}/vkcube.app/Contents/Frameworks/libMoltenVK.dylib
                        DEPENDS vulkan)
 endif()

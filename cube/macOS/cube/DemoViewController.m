@@ -33,9 +33,13 @@
 }
 
 - (void)dealloc {
-    demo_cleanup(&demo);
-    CVDisplayLinkRelease(_displayLink);
+    [self quit];
     [super dealloc];
+}
+
+- (void)quit {
+    CVDisplayLinkRelease(_displayLink);
+    demo_cleanup(&demo);
 }
 
 /** Since this is a single-view app, initialize Vulkan during view loading. */
@@ -52,7 +56,7 @@
         argv[i] = s.UTF8String;
     }
 
-    demo_main(&demo, self.view, args.count, argv);
+    demo_main(&demo, self.view.layer, args.count, argv);
 
     // Monitor the rendering loop for a quit condition
     _timer = [NSTimer scheduledTimerWithTimeInterval: 0.2
@@ -85,7 +89,6 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink, const CVTimeSt
     demo_run(demo);
     if (demo->quit) {
         CVDisplayLinkStop(displayLink);
-        CVDisplayLinkRelease(displayLink);
     }
     return kCVReturnSuccess;
 }
